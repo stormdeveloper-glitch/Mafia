@@ -20,7 +20,7 @@ from telegram.ext import (
 
 # ================== CONFIG ==================
 
-BOT_TOKEN = "8258628759:AAHbKdTS-UBpBldb_TSaJhTkFuDRTcyCFMA"
+BOT_TOKEN = "bot tokeningiz"
 ADMIN_ID = 6151329850
 
 DAY_IMAGE_URL = "https://t.me/c/3348020476/3"
