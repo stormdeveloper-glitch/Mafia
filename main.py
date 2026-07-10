@@ -6,9 +6,19 @@ import os
 import random
 import logging
 import boto3
+import sys
+import signal
 from botocore.client import Config
+import psycopg2
 from collections import defaultdict
 from dotenv import load_dotenv
+
+def signal_handler(sig, frame):
+    logging.info("Bot is shutting down gracefully...")
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, signal_handler)
+signal.signal(signal.SIGINT, signal_handler)
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -133,8 +143,118 @@ LANGUAGES = {
 }
 
 USER_LANG = {}
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
+def init_db():
+    if not DATABASE_URL:
+        logger.warning("DATABASE_URL topilmadi. PostgreSQL ulanmadi (in-memory rejimi ishlaydi).")
+        return
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id BIGINT PRIMARY KEY,
+                language VARCHAR(5) DEFAULT 'uz',
+                money INTEGER DEFAULT 0,
+                shield INTEGER DEFAULT 0,
+                documents INTEGER DEFAULT 0,
+                active_role INTEGER DEFAULT 0
+            );
+        """)
+        conn.commit()
+        cur.close()
+        conn.close()
+        logger.info("PostgreSQL database successfully initialized.")
+    except Exception as e:
+        logger.error(f"Error initializing PostgreSQL database: {e}")
+
+def get_user_lang(user_id):
+    if not DATABASE_URL:
+        return USER_LANG.get(user_id, "uz")
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute("SELECT language FROM users WHERE user_id = %s", (user_id,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if row:
+            return row[0]
+        else:
+            return "uz"
+    except Exception as e:
+        logger.error(f"Error fetching user lang {user_id}: {e}")
+        return USER_LANG.get(user_id, "uz")
+
+def set_user_lang(user_id, lang):
+    if not DATABASE_URL:
+        USER_LANG[user_id] = lang
+        return
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO users (user_id, language) VALUES (%s, %s)
+            ON CONFLICT (user_id) DO UPDATE SET language = EXCLUDED.language
+        """, (user_id, lang))
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Error setting user lang {user_id}: {e}")
+        USER_LANG[user_id] = lang
+
+def get_user(user_id):
+    if not DATABASE_URL:
+        return USER_DATA[user_id]
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute("SELECT money, shield, documents, active_role FROM users WHERE user_id = %s", (user_id,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if row:
+            return {
+                "money": row[0],
+                "shield": row[1],
+                "documents": row[2],
+                "active_role": row[3]
+            }
+        else:
+            conn = psycopg2.connect(DATABASE_URL)
+            cur = conn.cursor()
+            cur.execute("INSERT INTO users (user_id) VALUES (%s) ON CONFLICT (user_id) DO NOTHING", (user_id,))
+            conn.commit()
+            cur.close()
+            conn.close()
+            return {"money": 0, "shield": 0, "documents": 0, "active_role": 0}
+    except Exception as e:
+        logger.error(f"Error fetching user {user_id}: {e}")
+        return USER_DATA[user_id]
+
+def update_user(user_id, **kwargs):
+    if not DATABASE_URL:
+        for k, v in kwargs.items():
+            USER_DATA[user_id][k] = v
+        return
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        set_clause = ", ".join([f"{k} = %s" for k in kwargs.keys()])
+        values = list(kwargs.values()) + [user_id]
+        cur.execute(f"UPDATE users SET {set_clause} WHERE user_id = %s", tuple(values))
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Error updating user {user_id}: {e}")
+        for k, v in kwargs.items():
+            USER_DATA[user_id][k] = v
+
 def t(uid, key):
-    return LANGUAGES.get(USER_LANG.get(uid, "uz"), LANGUAGES["uz"]).get(key, key)
+    return LANGUAGES.get(get_user_lang(uid), LANGUAGES["uz"]).get(key, key)
 
 # ================== DATA ==================
 
@@ -332,7 +452,7 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
 
     if q.data.startswith("lang_"):
-        USER_LANG[uid] = q.data.split("_")[1]
+        set_user_lang(uid, q.data.split("_")[1])
         try:
             await q.edit_message_text(t(uid, "lang_set"))
         except Exception as e:
@@ -477,6 +597,9 @@ async def chat_guard(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ================== MAIN ==================
 
 def main():
+    # Initialize Database
+    init_db()
+
     if BOT_TOKEN == "bot tokeningiz" or not BOT_TOKEN:
         logger.error("BOT_TOKEN topilmadi! Iltimos, uni environment yoki .env faylda sozlang.")
         return
