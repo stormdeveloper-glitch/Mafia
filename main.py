@@ -32,6 +32,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from telegram.error import Conflict
 
 # Load environment variables
 load_dotenv()
@@ -305,7 +306,20 @@ def role_pool(n):
 # ================== COMMANDS ==================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🎭 Advanced Secret Mafia Bot")
+    uid = update.effective_user.id
+    welcome_text = (
+        "🎭 *Advanced Secret Mafia Bot*\n\n"
+        "Buyruqlar:\n"
+        "🎮 /newgame - Guruhda yangi o'yin boshlash\n"
+        "🌍 /lang - Tilni o'zgartirish\n"
+    )
+    if uid == ADMIN_ID:
+        welcome_text += (
+            "\n👑 *Admin Panel Buyruqlari*:\n"
+            "☀️ Biror GIF/rasmga reply qilib `/setday` deb yuboring (Railway Bucket'ga yuklaydi).\n"
+            "🌙 Biror GIF/rasmga reply qilib `/setnight` deb yuboring (Railway Bucket'ga yuklaydi).\n"
+        )
+    await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
 async def lang(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [
@@ -594,6 +608,14 @@ async def chat_guard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.warning(f"Could not delete message in chat {chat_id}: {e}")
 
+# ================== ERROR HANDLER ==================
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.error(msg="Exception while handling an update:", exc_info=context.error)
+    if isinstance(context.error, Conflict):
+        logger.error("Conflict detected! Another bot instance is running. Shutting down immediately to prevent loops...")
+        os._exit(1)
+
 # ================== MAIN ==================
 
 def main():
@@ -613,6 +635,7 @@ def main():
     app.add_handler(CommandHandler("setnight", set_media))
     app.add_handler(CallbackQueryHandler(callbacks))
     app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.GROUPS, chat_guard))
+    app.add_error_handler(error_handler)
 
     logger.info("Bot ishga tushmoqda...")
     app.run_polling()
